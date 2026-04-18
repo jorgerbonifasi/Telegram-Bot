@@ -300,6 +300,7 @@ class TodoSkill(BaseSkill):
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     def _fuzzy_find(self, uid: int, task_text: str) -> list:
+        task_text = task_text.strip("\"'""''")
         rows = self._db.table("todos").select("id,text").eq("user_id", uid) \
             .ilike("text", f"%{task_text}%").execute().data
         return rows
