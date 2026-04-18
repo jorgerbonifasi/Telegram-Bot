@@ -71,7 +71,10 @@ class TodoSkill(BaseSkill):
 
         uid = update.effective_user.id
         ext = extracted or {}
+        VALID_ACTIONS = {"add", "list", "done", "status", "move", "clear", "update"}
         action = ext.get("action") or self._parse_action(user_text)
+        if action not in VALID_ACTIONS:
+            action = self._parse_action(user_text)
 
         if action == "add":
             return await self._add(uid, ext, user_text)
@@ -235,7 +238,8 @@ class TodoSkill(BaseSkill):
         return rows
 
     def _parse_action(self, text: str) -> str:
-        t = text.lower()
+        t = text.lower().strip()
+        if not t or t in ("/todo", "/t", "/tasks"):                return "list"
         if any(w in t for w in ["add ", "new ", "create "]):       return "add"
         if any(w in t for w in ["list", "show", "tasks", "/todo", "/t", "/tasks"]): return "list"
         if any(w in t for w in ["done", "complete", "finished"]):  return "done"
