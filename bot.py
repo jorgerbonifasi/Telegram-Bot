@@ -98,6 +98,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     # Conversational state: todo ➕ Add flow
     if context.user_data.get("todo_state") == "awaiting_add":
         context.user_data.pop("todo_state")
+        if user_text.lower().strip() in ("cancel", "nevermind", "never mind", "exit", "stop", "nope", "no"):
+            await update.message.reply_text("Cancelled.")
+            return
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
         intent = await classify(user_text)
         extracted = intent.get("extracted", {})

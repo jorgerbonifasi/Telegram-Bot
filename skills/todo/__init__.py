@@ -203,7 +203,15 @@ class TodoSkill(BaseSkill):
                 chat_id=update.effective_chat.id,
                 text="What's the task? _(you can include section, priority, and lift)_",
                 parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("❌ Cancel", callback_data="todo:add_cancel"),
+                ]]),
             )
+            return
+
+        if action == "add_cancel":
+            context.user_data.pop("todo_state", None)
+            await query.edit_message_text("Cancelled.")
             return
 
         section_filter = None if action == "all" else action
