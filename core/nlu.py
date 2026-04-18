@@ -46,7 +46,7 @@ Respond ONLY with a JSON object, no markdown, no explanation:
 
     // For "todo":
     //   "action": "add" | "list" | "done" | "delete" | "clear",
-    //   "task": string — the task text, rewritten as a clean action phrase: capitalize first word, fix typos, expand contractions/abbreviations (e.g. "pickup shoes" → "Pick up shoes", "review prs" → "Review PRs"). Keep it short and natural.
+    //   "task": string — rewrite as a clean, natural action phrase. Rules: (1) capitalize only the first word and proper nouns, (2) no colons — fold lists into natural language (e.g. "Clean: floors, trash" → "Clean floors and trash"), (3) fix typos and spacing, (4) expand abbreviations (e.g. "pickup" → "Pick up", "prs" → "PRs"), (5) keep it concise. Examples: "wash dishes" → "Wash dishes", "buy tickets: frankfurt birthday" → "Buy tickets for Frankfurt and birthday".
     //   "section": "work" | "personal" | null,
     //   "priority": "high" | "medium" | "low" | null
   }},
