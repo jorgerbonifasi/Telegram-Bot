@@ -212,8 +212,8 @@ async def post_init(app: Application) -> None:
 
     commands = [BotCommand("start", "Show all skills"), BotCommand("help", "Help")]
     for skill in registry.all():
-        for cmd in skill.commands:
-            commands.append(BotCommand(cmd.lstrip("/"), skill.description[:64]))
+        cmd = skill.commands[0].lstrip("/")
+        commands.append(BotCommand(cmd, skill.description[:64]))
     await app.bot.set_my_commands(commands)
     print(f"[bot] Started with skills: {[s.name for s in registry.all()]}")
 

@@ -42,7 +42,7 @@ STATUS_LABEL   = {"In Progress": "_in progress_", "Pending": "_pending_", "In Pr
 
 class TodoSkill(BaseSkill):
     name        = "todo"
-    description = "Daily to-do list with Work and Personal sections"
+    description = "Manage your to-do list"
     commands    = ["/todo", "/t", "/tasks"]
     examples    = [
         "add review PRs to work P1",

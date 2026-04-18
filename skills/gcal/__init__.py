@@ -54,7 +54,7 @@ EVENT_TYPES = {
 
 class GCalSkill(BaseSkill):
     name        = "gcal"
-    description = "Google Calendar — view agenda, create, edit, and delete events"
+    description = "View and manage your calendar"
     commands    = ["/cal", "/event", "/gcal"]
     examples    = [
         "meeting with Kate tomorrow at 3pm for 1 hour",
