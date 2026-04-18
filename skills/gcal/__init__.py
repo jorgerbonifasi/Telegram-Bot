@@ -162,10 +162,23 @@ If date/time is ambiguous, make a reasonable assumption and include it.""",
     return json.loads(raw)
 
 
+def _resolve_date(date_str: str, tz) -> str:
+    today = datetime.now(tz).date()
+    d = (date_str or "").lower().strip()
+    if d in ("today", ""): return str(today)
+    if d == "tomorrow": return str(today + timedelta(days=1))
+    if d == "yesterday": return str(today - timedelta(days=1))
+    try:
+        datetime.fromisoformat(date_str)
+        return date_str
+    except ValueError:
+        return str(today)
+
+
 def _build_preview(ext: dict) -> tuple[str, dict]:
     """Build a Markdown preview string and a Google Calendar event body."""
     tz       = ZoneInfo(TIMEZONE)
-    date_str = ext.get("date", datetime.now(tz).strftime("%Y-%m-%d"))
+    date_str = _resolve_date(ext.get("date", ""), tz)
     time_str = ext.get("start_time", "09:00")
     duration = int(ext.get("duration_minutes", 60))
 
