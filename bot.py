@@ -25,6 +25,7 @@ load_dotenv()
 SKILL_MODULES = [
     "skills.todo",
     "skills.gcal",
+    "skills.docs",
     # "skills.my_new_skill",   ← add new skills here
 ]
 for mod in SKILL_MODULES:
