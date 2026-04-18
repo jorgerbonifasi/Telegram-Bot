@@ -27,7 +27,7 @@ Supabase table: todos
 from __future__ import annotations
 import os
 from supabase import create_client, Client
-from telegram import Update
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 from core.skill_base import BaseSkill, SkillResult, registry
 
@@ -181,17 +181,57 @@ class TodoSkill(BaseSkill):
 
     # ── Rendering ─────────────────────────────────────────────────────────────
 
-    async def _render(self, uid: int, prefix: str = "") -> SkillResult:
+    def _nav_keyboard(self) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("💼 Work",     callback_data="todo:work"),
+                InlineKeyboardButton("🏠 Personal", callback_data="todo:personal"),
+                InlineKeyboardButton("📋 All",      callback_data="todo:all"),
+            ],
+            [InlineKeyboardButton("➕ Add task", callback_data="todo:add")],
+        ])
+
+    async def handle_callback(self, update, context) -> None:
+        query = update.callback_query
+        await query.answer()
+        action = query.data.split(":", 1)[1]   # "work" | "personal" | "all" | "add"
+        uid = update.effective_user.id
+
+        if action == "add":
+            context.user_data["todo_state"] = "awaiting_add"
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="What's the task? _(you can include section, priority, and lift)_",
+                parse_mode="Markdown",
+            )
+            return
+
+        section_filter = None if action == "all" else action
+        result = await self._render(uid, section_filter=section_filter)
+        await query.edit_message_text(
+            result.text,
+            parse_mode="Markdown",
+            reply_markup=result.reply_markup,
+        )
+
+    async def _render(self, uid: int, prefix: str = "", section_filter: str | None = None) -> SkillResult:
         rows = self._db.table("todos").select("*").eq("user_id", uid).execute().data
         work     = [r for r in rows if r.get("section") == "work"]
         personal = [r for r in rows if r.get("section") != "work"]
+
+        if section_filter == "work":
+            sections = [("💼 *Work*", work)]
+        elif section_filter == "personal":
+            sections = [("🏠 *Personal*", personal)]
+        else:
+            sections = [("💼 *Work*", work), ("🏠 *Personal*", personal)]
 
         lines = []
         if prefix:
             lines.append(prefix)
             lines.append("")
 
-        for header, tasks in [("💼 *Work*", work), ("🏠 *Personal*", personal)]:
+        for header, tasks in sections:
             lines.append(header)
             if not tasks:
                 lines.append("_no tasks_")
@@ -206,7 +246,7 @@ class TodoSkill(BaseSkill):
             lines.append("")
 
         lines.append("_What's next?_")
-        return SkillResult("\n".join(lines), suggestions=["list", "clear all"])
+        return SkillResult("\n".join(lines), reply_markup=self._nav_keyboard())
 
     def _fmt_task(self, t: dict) -> str:
         icon = STATUS_EMOJI.get(t.get("status", "Pending"), "○")
@@ -300,4 +340,5 @@ class TodoSkill(BaseSkill):
         return "—"
 
 
-registry.register(TodoSkill())
+_skill_instance = TodoSkill()
+registry.register(_skill_instance)

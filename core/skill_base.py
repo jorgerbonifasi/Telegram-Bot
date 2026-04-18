@@ -13,7 +13,7 @@ That's it — /help, routing, and menus update automatically.
 from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Any
 from telegram import Update
 from telegram.ext import ContextTypes
 
@@ -25,6 +25,7 @@ class SkillResult:
     success: bool = True
     parse_mode: str = "Markdown"
     suggestions: list[str] = field(default_factory=list)  # Quick-reply button labels
+    reply_markup: Any = None                # InlineKeyboardMarkup, overrides suggestions
 
 
 class BaseSkill(ABC):

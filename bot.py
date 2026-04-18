@@ -34,8 +34,9 @@ from core.skill_base import registry, SkillResult
 from core.nlu import classify
 from core.auth import require_auth
 
-# GCal skill exposes a callback handler for confirm/cancel buttons
+# Skills that expose callback handlers for inline buttons
 from skills.gcal import _skill_instance as gcal_skill
+from skills.todo import _skill_instance as todo_skill
 
 
 # ── Handlers ──────────────────────────────────────────────────────────────────
@@ -94,6 +95,18 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     """Route free-text messages via NLU."""
     user_text = update.message.text
 
+    # Conversational state: todo ➕ Add flow
+    if context.user_data.get("todo_state") == "awaiting_add":
+        context.user_data.pop("todo_state")
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+        intent = await classify(user_text)
+        extracted = intent.get("extracted", {})
+        extracted["action"] = "add"
+        result = await todo_skill.handle(update, context, user_text, extracted=extracted)
+        if result.text:
+            await _send_result(update, result)
+        return
+
     # Show typing indicator
     await context.bot.send_chat_action(
         chat_id=update.effective_chat.id, action="typing"
@@ -125,6 +138,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await gcal_skill.handle_callback(update, context)
         return
 
+    if data.startswith("todo:"):
+        await todo_skill.handle_callback(update, context)
+        return
+
     if data.startswith("skill_menu:"):
         skill_name = data.split(":", 1)[1]
         skill = registry.by_name(skill_name)
@@ -144,12 +161,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 # ── Utilities ────────────────────────────────────────────────────────────────
 
 async def _send_result(update: Update, result: SkillResult) -> None:
-    keyboard = None
-    if result.suggestions:
+    if result.reply_markup is not None:
+        keyboard = result.reply_markup
+    elif result.suggestions:
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton(s, callback_data=f"nlu_suggest:{s}")
             for s in result.suggestions[:3]
         ]])
+    else:
+        keyboard = None
     await update.message.reply_text(
         result.text,
         parse_mode=result.parse_mode,
