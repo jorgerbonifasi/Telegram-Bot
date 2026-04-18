@@ -37,6 +37,7 @@ LIFT_ORDER     = {"Small": 0, "Medium": 1, "Hard": 2, "—": 3}
 
 STATUS_EMOJI   = {"In Progress": "▶", "Pending": "○", "In Progress — Waiting": "⏸"}
 PRIORITY_EMOJI = {"P0": "🔴", "P1": "🟠", "P2": "🟡"}
+STATUS_LABEL   = {"In Progress": "_in progress_", "Pending": "_pending_", "In Progress — Waiting": "_waiting_"}
 
 
 class TodoSkill(BaseSkill):
@@ -242,6 +243,10 @@ class TodoSkill(BaseSkill):
         )
 
     async def _render(self, uid: int, prefix: str = "", section_filter: str | None = None) -> SkillResult:
+        from datetime import date
+        today = date.today()
+        date_str = today.strftime("%A, %-d %B")
+
         rows = self._db.table("todos").select("*").eq("user_id", uid).execute().data
         work     = [r for r in rows if r.get("section") == "work"]
         personal = [r for r in rows if r.get("section") != "work"]
@@ -253,13 +258,24 @@ class TodoSkill(BaseSkill):
         else:
             sections = [("💼 *Work*", work), ("🏠 *Personal*", personal)]
 
+        DIVIDER = "───────────────────"
+
         lines = []
         if prefix:
             lines.append(prefix)
             lines.append("")
 
+        lines.append(f"📅 _{date_str}_")
+        lines.append("")
+
         for header, tasks in sections:
-            lines.append(header)
+            n = len(tasks)
+            count_tag = f"  _· {n} task{'s' if n != 1 else ''}_" if n else ""
+            lines.append(DIVIDER)
+            lines.append(f"{header}{count_tag}")
+            lines.append(DIVIDER)
+            lines.append("")
+
             if not tasks:
                 lines.append("_no tasks_")
             else:
@@ -268,8 +284,14 @@ class TodoSkill(BaseSkill):
                     PRIORITY_ORDER.get(r.get("priority", "—"), 3),
                     LIFT_ORDER.get(r.get("lift", "—"), 3),
                 ))
+                prev_status = None
                 for t in sorted_tasks:
+                    cur_status = t.get("status", "Pending")
+                    if prev_status is not None and cur_status != prev_status:
+                        lines.append("")
                     lines.append(self._fmt_task(t))
+                    prev_status = cur_status
+
             lines.append("")
 
         lines.append("_What's next?_")
@@ -290,11 +312,11 @@ class TodoSkill(BaseSkill):
         if self._show_deadline:
             d = t.get("deadline", "—")
             if d != "—":
-                meta.append(d)
+                meta.append(f"📆 {d}")
 
-        line = f"{icon} *{t['text']}*"
+        line = f"{icon}  *{t['text']}*"
         if meta:
-            line += "  " + " · ".join(meta)
+            line += f"\n    _{'  ·  '.join(meta)}_"
         return line
 
     # ── Helpers ───────────────────────────────────────────────────────────────
