@@ -30,7 +30,7 @@ SKILL_MODULES = [
 for mod in SKILL_MODULES:
     importlib.import_module(mod)
 
-from core.skill_base import registry
+from core.skill_base import registry, SkillResult
 from core.nlu import classify
 from core.auth import require_auth
 
