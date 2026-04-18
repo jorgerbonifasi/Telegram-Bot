@@ -103,8 +103,8 @@ class TodoSkill(BaseSkill):
             return SkillResult("What task do you want to add?", success=False)
 
         section  = ext.get("section") or self._infer_section(raw)
-        priority = self._normalize_priority(ext.get("priority", "—"))
-        lift     = self._normalize_lift(ext.get("lift", "—"))
+        priority = self._normalize_priority(ext.get("priority") or "—")
+        lift     = self._normalize_lift(ext.get("lift") or "—")
         deadline = ext.get("deadline", "—")
 
         if deadline and deadline != "—":
@@ -269,13 +269,15 @@ class TodoSkill(BaseSkill):
         if any(w in t for w in work_signals): return "work"
         return "personal"
 
-    def _normalize_priority(self, p: str) -> str:
-        p = p.upper().strip()
+    def _normalize_priority(self, p) -> str:
+        if not p: return "—"
+        p = str(p).upper().strip()
         if p in ("P0", "P1", "P2"): return p
         return "—"
 
-    def _normalize_lift(self, l: str) -> str:
-        l = l.strip().title()
+    def _normalize_lift(self, l) -> str:
+        if not l: return "—"
+        l = str(l).strip().title()
         if l == "Big": return "Hard"
         if l in ("Small", "Medium", "Hard"): return l
         return "—"
