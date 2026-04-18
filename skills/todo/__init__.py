@@ -188,7 +188,10 @@ class TodoSkill(BaseSkill):
                 InlineKeyboardButton("🏠 Personal", callback_data="todo:personal"),
                 InlineKeyboardButton("📋 All",      callback_data="todo:all"),
             ],
-            [InlineKeyboardButton("➕ Add task", callback_data="todo:add")],
+            [
+                InlineKeyboardButton("➕ Add task", callback_data="todo:add"),
+                InlineKeyboardButton("✅ Done",     callback_data="todo:done"),
+            ],
         ])
 
     async def handle_callback(self, update, context) -> None:
@@ -210,6 +213,22 @@ class TodoSkill(BaseSkill):
             return
 
         if action == "add_cancel":
+            context.user_data.pop("todo_state", None)
+            await query.edit_message_text("Cancelled.")
+            return
+
+        if action == "done":
+            context.user_data["todo_state"] = "awaiting_done"
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="Which task is done?",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("❌ Cancel", callback_data="todo:done_cancel"),
+                ]]),
+            )
+            return
+
+        if action == "done_cancel":
             context.user_data.pop("todo_state", None)
             await query.edit_message_text("Cancelled.")
             return
