@@ -31,9 +31,12 @@ from telegram import Update
 from telegram.ext import ContextTypes
 from core.skill_base import BaseSkill, SkillResult, registry
 
-STATUS_ORDER = {"In Progress": 0, "Pending": 1, "In Progress — Waiting": 2}
+STATUS_ORDER   = {"In Progress": 0, "Pending": 1, "In Progress — Waiting": 2}
 PRIORITY_ORDER = {"P0": 0, "P1": 1, "P2": 2, "—": 3}
-LIFT_ORDER = {"Small": 0, "Medium": 1, "Hard": 2, "—": 3}
+LIFT_ORDER     = {"Small": 0, "Medium": 1, "Hard": 2, "—": 3}
+
+STATUS_EMOJI   = {"In Progress": "▶", "Pending": "○", "In Progress — Waiting": "⏸"}
+PRIORITY_EMOJI = {"P0": "🔴", "P1": "🟠", "P2": "🟡"}
 
 
 class TodoSkill(BaseSkill):
@@ -58,7 +61,6 @@ class TodoSkill(BaseSkill):
         key = os.getenv("SUPABASE_SERVICE_KEY")
         if url and key:
             self._db = create_client(url, key)
-            # Ensure table has deadline column (best-effort)
         else:
             print("[todo] WARNING: Supabase not configured")
 
@@ -121,7 +123,7 @@ class TodoSkill(BaseSkill):
         }).execute()
 
         assumption = f" _(added to {section} — move me if wrong)_" if section == self._infer_section(raw) else ""
-        return await self._render(uid, prefix=f"Added 👍 *{text}*{assumption}")
+        return await self._render(uid, prefix=f"✅ Added *{text}*{assumption}")
 
     async def _mark_done(self, uid: int, task_text: str) -> SkillResult:
         if not task_text:
@@ -134,7 +136,7 @@ class TodoSkill(BaseSkill):
         ids = [r["id"] for r in rows]
         self._db.table("todos").delete().in_("id", ids).execute()
         names = ", ".join(f"*{r['text']}*" for r in rows)
-        return await self._render(uid, prefix=f"Done ✅ {names}")
+        return await self._render(uid, prefix=f"✅ Done — {names}")
 
     async def _update_field(self, uid: int, task_text: str, field: str, value: str) -> SkillResult:
         rows = self._fuzzy_find(uid, task_text)
@@ -143,7 +145,7 @@ class TodoSkill(BaseSkill):
         ids = [r["id"] for r in rows]
         self._db.table("todos").update({field: value}).in_("id", ids).execute()
         names = ", ".join(f"*{r['text']}*" for r in rows)
-        return await self._render(uid, prefix=f"Updated 👍 {names}")
+        return await self._render(uid, prefix=f"👍 Updated *{names}*")
 
     async def _update_fields(self, uid: int, ext: dict, raw: str) -> SkillResult:
         task_text = ext.get("task", "") or self._extract_task_name(raw)
@@ -159,7 +161,7 @@ class TodoSkill(BaseSkill):
             ids = [r["id"] for r in rows]
             self._db.table("todos").update(updates).in_("id", ids).execute()
         names = ", ".join(f"*{r['text']}*" for r in rows)
-        return await self._render(uid, prefix=f"Updated 👍 {names}")
+        return await self._render(uid, prefix=f"👍 Updated *{names}*")
 
     async def _clear(self, uid: int, raw: str) -> SkillResult:
         t = raw.lower()
@@ -172,7 +174,7 @@ class TodoSkill(BaseSkill):
         else:
             self._db.table("todos").delete().eq("user_id", uid).execute()
             label = "all"
-        return await self._render(uid, prefix=f"Done ✅ — {label} tasks cleared")
+        return await self._render(uid, prefix=f"🗑 Cleared {label} tasks")
 
     # ── Rendering ─────────────────────────────────────────────────────────────
 
@@ -186,32 +188,44 @@ class TodoSkill(BaseSkill):
             lines.append(prefix)
             lines.append("")
 
-        for section_name, tasks in [("Work", work), ("Personal", personal)]:
-            lines.append(f"*{section_name}*")
+        for header, tasks in [("💼 *Work*", work), ("🏠 *Personal*", personal)]:
+            lines.append(header)
             if not tasks:
-                lines.append("_(no tasks)_")
+                lines.append("_no tasks_")
             else:
                 sorted_tasks = sorted(tasks, key=lambda r: (
                     STATUS_ORDER.get(r.get("status", "Pending"), 1),
                     PRIORITY_ORDER.get(r.get("priority", "—"), 3),
                     LIFT_ORDER.get(r.get("lift", "—"), 3),
                 ))
-                header = "| Task | Status | Lift | Priority |"
-                sep    = "|------|--------|------|----------|"
-                if self._show_deadline:
-                    header = "| Task | Status | Lift | Priority | Deadline |"
-                    sep    = "|------|--------|------|----------|----------|"
-                lines.append(header)
-                lines.append(sep)
                 for t in sorted_tasks:
-                    row = f"| {t['text']} | {t.get('status','Pending')} | {t.get('lift','—')} | {t.get('priority','—')} |"
-                    if self._show_deadline:
-                        row += f" {t.get('deadline','—')} |"
-                    lines.append(row)
+                    lines.append(self._fmt_task(t))
             lines.append("")
 
-        lines.append("What's next?")
+        lines.append("_What's next?_")
         return SkillResult("\n".join(lines), suggestions=["list", "clear all"])
+
+    def _fmt_task(self, t: dict) -> str:
+        icon = STATUS_EMOJI.get(t.get("status", "Pending"), "○")
+        meta = []
+
+        p = t.get("priority", "—")
+        if p != "—":
+            meta.append(f"{PRIORITY_EMOJI[p]} {p}")
+
+        l = t.get("lift", "—")
+        if l != "—":
+            meta.append(l)
+
+        if self._show_deadline:
+            d = t.get("deadline", "—")
+            if d != "—":
+                meta.append(d)
+
+        line = f"{icon} *{t['text']}*"
+        if meta:
+            line += "  " + " · ".join(meta)
+        return line
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -256,7 +270,6 @@ class TodoSkill(BaseSkill):
         skip = {"add", "new", "create", "task", "todo", "to", "/todo", "/t", "/tasks"}
         while words and words[0].lower() in skip:
             words = words[1:]
-        # Strip trailing section/priority hints
         tail_skip = {"work", "personal", "p0", "p1", "p2", "small", "medium", "hard", "big"}
         while words and words[-1].lower() in tail_skip:
             words = words[:-1]
