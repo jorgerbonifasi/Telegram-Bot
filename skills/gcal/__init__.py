@@ -1,12 +1,12 @@
 """
-skills/gcal/__init__.py  —  Google Calendar Event Creator
+skills/gcal/__init__.py  —  Google Calendar Skill
 
-Follows the gcal-event-creator SKILL.md spec exactly:
-- Extracts event details from any input (text, described screenshots, etc.)
-- Always shows a preview with emoji, reminders, and Claude note BEFORE creating
-- Applies event-type defaults (duration, reminders, emoji)
-- Handles natural language dates and London timezone
-- Confirm/cancel via inline buttons
+Features:
+- View today / tomorrow / week agenda  (/cal with no args)
+- Create events from natural language
+- Edit events via inline button (fixed)
+- Delete events ("cancel my tennis tomorrow")
+- Nav menu [📅 Today] [📅 Tomorrow] [🗓 Week] [➕ Add] on every response
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ TOKEN_FILE = Path("google_token.pickle")
 TIMEZONE   = "Europe/London"
 
 _claude  = anthropic.Anthropic()
-_pending: dict[str, dict] = {}  # {key: event_body}
+_pending: dict[str, dict] = {}  # {key: {"body": event_body, "ext": ext}}
 
 # ── Event type defaults ───────────────────────────────────────────────────────
 
@@ -54,14 +54,14 @@ EVENT_TYPES = {
 
 class GCalSkill(BaseSkill):
     name        = "gcal"
-    description = "Create Google Calendar events from any description or screenshot"
+    description = "Google Calendar — view agenda, create, edit, and delete events"
     commands    = ["/cal", "/event", "/gcal"]
     examples    = [
         "meeting with Kate tomorrow at 3pm for 1 hour",
         "tennis vs Marcus Saturday 10am",
-        "dentist appointment Friday 10am",
-        "lunch with Jess next Tuesday 12:30",
-        "/cal team sync Thursday 2pm 45min",
+        "what's on today",
+        "cancel my dentist appointment",
+        "/cal",
     ]
 
     def __init__(self):
@@ -74,6 +74,8 @@ class GCalSkill(BaseSkill):
         except Exception as e:
             print(f"[gcal] WARNING: {e}")
 
+    # ── Main handler ──────────────────────────────────────────────────────────
+
     async def handle(self, update: Update, context: ContextTypes.DEFAULT_TYPE,
                      user_text: str, extracted: dict | None = None) -> SkillResult:
         if not self._service:
@@ -83,17 +85,28 @@ class GCalSkill(BaseSkill):
                 success=False,
             )
 
+        action = self._parse_gcal_action(user_text, extracted)
+
+        if action == "view":
+            period = self._parse_period(user_text)
+            return await self._view_agenda(period)
+
+        if action == "delete":
+            return await self._delete_flow(update, context, user_text)
+
+        # ── Create flow ───────────────────────────────────────────────────────
         ext = extracted or await _extract_event(user_text)
 
         if not ext.get("title"):
             return SkillResult(
                 "I couldn't find an event title. Try:\n_meeting with Kate tomorrow at 3pm_",
                 success=False,
+                reply_markup=self._nav_keyboard(),
             )
 
         preview, event_body = _build_preview(ext)
         key = f"{update.effective_user.id}:{datetime.now().timestamp()}"
-        _pending[key] = event_body
+        _pending[key] = {"body": event_body, "ext": ext}
 
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton("✅ Create event", callback_data=f"gcal_confirm:{key}"),
@@ -104,50 +117,276 @@ class GCalSkill(BaseSkill):
         await update.message.reply_text(preview, parse_mode="Markdown", reply_markup=keyboard)
         return SkillResult("", success=True)
 
+    async def handle_edit(self, update: Update, context: ContextTypes.DEFAULT_TYPE,
+                          correction: str, key: str) -> SkillResult:
+        """Re-extract event using correction + original ext, show updated preview."""
+        pending = _pending.get(key)
+        if not pending:
+            return SkillResult("⚠️ Event expired — please describe it again.", success=False,
+                               reply_markup=self._nav_keyboard())
+
+        new_ext = await _re_extract_event(pending["ext"], correction)
+        preview, event_body = _build_preview(new_ext)
+        _pending[key] = {"body": event_body, "ext": new_ext}
+
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Create event", callback_data=f"gcal_confirm:{key}"),
+            InlineKeyboardButton("✏️ Edit",          callback_data=f"gcal_edit:{key}"),
+            InlineKeyboardButton("❌ Cancel",         callback_data=f"gcal_cancel:{key}"),
+        ]])
+
+        await update.message.reply_text(preview, parse_mode="Markdown", reply_markup=keyboard)
+        return SkillResult("", success=True)
+
+    # ── Callback handler ──────────────────────────────────────────────────────
+
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         query = update.callback_query
         await query.answer()
         data  = query.data
 
+        # ── Nav menu ──────────────────────────────────────────────────────────
+        if data in ("gcal_today", "gcal_tomorrow", "gcal_week"):
+            period = data.split("_", 1)[1]
+            result = await self._view_agenda(period)
+            await query.edit_message_text(result.text, parse_mode="Markdown",
+                                          reply_markup=result.reply_markup)
+            return
+
+        if data == "gcal_add":
+            context.user_data["gcal_state"] = "awaiting_create"
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="What's the event? _(e.g. tennis vs Marcus Saturday 10am)_",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("❌ Cancel", callback_data="gcal_add_cancel"),
+                ]]),
+            )
+            return
+
+        if data == "gcal_add_cancel":
+            context.user_data.pop("gcal_state", None)
+            await query.edit_message_text("Cancelled.")
+            return
+
+        # ── Create flow ───────────────────────────────────────────────────────
         if data.startswith("gcal_cancel:"):
             _pending.pop(data.split(":", 1)[1], None)
             await query.edit_message_text("❌ Cancelled.")
             return
 
         if data.startswith("gcal_edit:"):
+            key = data.split(":", 1)[1]
+            if key not in _pending:
+                await query.edit_message_text("⚠️ Event expired. Please try again.")
+                return
+            context.user_data["gcal_state"] = {"mode": "editing", "key": key}
             await query.edit_message_text(
-                "Tell me what to change — e.g. _make it 2 hours_, _change time to 4pm_, _add location Hyde Park_"
+                "What would you like to change?\n"
+                "_e.g. make it 2 hours · change to 4pm · add location Hyde Park_",
+                parse_mode="Markdown",
             )
             return
 
         if data.startswith("gcal_confirm:"):
             key = data.split(":", 1)[1]
-            event_body = _pending.pop(key, None)
-            if not event_body:
+            pending = _pending.pop(key, None)
+            if not pending:
                 await query.edit_message_text("⚠️ Event expired. Please try again.")
                 return
             try:
                 created = self._service.events().insert(
-                    calendarId="primary", body=event_body
+                    calendarId="primary", body=pending["body"]
                 ).execute()
-                link = created.get("htmlLink", "")
-                title = event_body.get("summary", "Event")
+                link  = created.get("htmlLink", "")
+                title = pending["body"].get("summary", "Event")
                 await query.edit_message_text(
                     f"✅ *{title}* added to your calendar.\n\n[Open in Google Calendar]({link})",
                     parse_mode="Markdown",
                 )
             except Exception as e:
                 await query.edit_message_text(f"❌ Failed to create event: {e}")
+            return
+
+        # ── Delete flow ───────────────────────────────────────────────────────
+        if data.startswith("gcal_delete_confirm:"):
+            event_id = data.split(":", 1)[1]
+            try:
+                self._service.events().delete(
+                    calendarId="primary", eventId=event_id
+                ).execute()
+                await query.edit_message_text("🗑 Event deleted.")
+            except Exception as e:
+                await query.edit_message_text(f"❌ Failed to delete: {e}")
+            return
+
+        if data == "gcal_delete_cancel":
+            await query.edit_message_text("Cancelled.")
+            return
+
+    # ── View agenda ───────────────────────────────────────────────────────────
+
+    async def _view_agenda(self, period: str = "today") -> SkillResult:
+        tz  = ZoneInfo(TIMEZONE)
+        now = datetime.now(tz)
+
+        if period == "tomorrow":
+            day_start = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+            day_end   = day_start + timedelta(days=1)
+            header    = day_start.strftime("📅 *Tomorrow — %A %d %b*")
+        elif period == "week":
+            day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            day_end   = day_start + timedelta(days=7)
+            header    = "🗓 *Next 7 Days*"
+        else:
+            day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            day_end   = day_start + timedelta(days=1)
+            header    = now.strftime("📅 *Today — %A %d %b*")
+
+        events_result = self._service.events().list(
+            calendarId  = "primary",
+            timeMin     = day_start.isoformat(),
+            timeMax     = day_end.isoformat(),
+            singleEvents= True,
+            orderBy     = "startTime",
+            maxResults  = 20,
+        ).execute()
+
+        events = events_result.get("items", [])
+        lines  = [header, ""]
+
+        if not events:
+            lines.append("_Nothing scheduled_")
+        elif period == "week":
+            current_day = None
+            for ev in events:
+                start_raw = ev["start"].get("dateTime", ev["start"].get("date"))
+                if "T" in start_raw:
+                    dt        = datetime.fromisoformat(start_raw).astimezone(tz)
+                    day_label = dt.strftime("%A %d %b")
+                    time_str  = f"  · {self._fmt_time_range(ev, tz)}"
+                else:
+                    dt        = datetime.fromisoformat(start_raw)
+                    day_label = dt.strftime("%A %d %b")
+                    time_str  = "  · All day"
+
+                if day_label != current_day:
+                    if current_day:
+                        lines.append("")
+                    lines.append(f"*{day_label}*")
+                    current_day = day_label
+
+                lines.append(f"{ev.get('summary', 'Untitled')}{time_str}")
+        else:
+            for ev in events:
+                lines.append(f"{ev.get('summary', 'Untitled')}  · {self._fmt_time_range(ev, tz)}")
+
+        lines.append("")
+        n = len(events)
+        if n == 1:
+            lines.append("_1 event_")
+        elif n > 1:
+            lines.append(f"_{n} events_")
+
+        return SkillResult("\n".join(lines), reply_markup=self._nav_keyboard())
+
+    # ── Delete flow ───────────────────────────────────────────────────────────
+
+    async def _delete_flow(self, update: Update, context: ContextTypes.DEFAULT_TYPE,
+                           user_text: str) -> SkillResult:
+        tz  = ZoneInfo(TIMEZONE)
+        now = datetime.now(tz)
+        q   = self._extract_delete_query(user_text)
+
+        events_result = self._service.events().list(
+            calendarId  = "primary",
+            timeMin     = now.isoformat(),
+            timeMax     = (now + timedelta(days=30)).isoformat(),
+            singleEvents= True,
+            orderBy     = "startTime",
+            maxResults  = 10,
+            q           = q,
+        ).execute()
+
+        events = events_result.get("items", [])
+
+        if not events:
+            return SkillResult(
+                f"Couldn't find any upcoming events matching _{q}_",
+                success=False,
+                reply_markup=self._nav_keyboard(),
+            )
+
+        ev       = events[0]
+        summary  = ev.get("summary", "Untitled")
+        time_str = self._fmt_time_range(ev, tz)
+        note     = f"\n_({len(events)} matches found, showing soonest)_" if len(events) > 1 else ""
+
+        return SkillResult(
+            f"🗑 Delete *{summary}*?\n_{time_str}_{note}",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🗑 Yes, delete", callback_data=f"gcal_delete_confirm:{ev['id']}"),
+                InlineKeyboardButton("❌ Cancel",       callback_data="gcal_delete_cancel"),
+            ]]),
+        )
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def _nav_keyboard(self) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup([[
+            InlineKeyboardButton("📅 Today",    callback_data="gcal_today"),
+            InlineKeyboardButton("📅 Tomorrow", callback_data="gcal_tomorrow"),
+            InlineKeyboardButton("🗓 Week",     callback_data="gcal_week"),
+            InlineKeyboardButton("➕ Add",      callback_data="gcal_add"),
+        ]])
+
+    def _fmt_time_range(self, event: dict, tz) -> str:
+        start_raw = event["start"].get("dateTime", event["start"].get("date"))
+        end_raw   = event["end"].get("dateTime",   event["end"].get("date"))
+        if "T" not in start_raw:
+            return "All day"
+        start = datetime.fromisoformat(start_raw).astimezone(tz)
+        end   = datetime.fromisoformat(end_raw).astimezone(tz)
+        return f"{start.strftime('%H:%M')} – {end.strftime('%H:%M')}"
+
+    def _parse_gcal_action(self, text: str, extracted: dict | None) -> str:
+        t = text.lower().strip()
+        if not t or t in ("today", "tomorrow", "this week", "week"):
+            return "view"
+        if any(w in t for w in ["what's on", "show", "agenda", "schedule", "what do i have", "what have i got"]):
+            return "view"
+        if any(t.startswith(w) for w in ["cancel my", "cancel ", "delete my", "delete ", "remove my", "remove "]):
+            return "delete"
+        return "create"
+
+    def _parse_period(self, text: str) -> str:
+        t = text.lower()
+        if "tomorrow" in t: return "tomorrow"
+        if "week" in t:     return "week"
+        return "today"
+
+    def _extract_delete_query(self, text: str) -> str:
+        t = text.lower().strip()
+        for prefix in ["cancel my ", "cancel ", "delete my ", "delete ", "remove my ", "remove "]:
+            if t.startswith(prefix):
+                t = t[len(prefix):]
+                break
+        for suffix in [" tomorrow", " today", " this week", " next week"]:
+            if t.endswith(suffix):
+                t = t[:-len(suffix)]
+        return t.strip()
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Module-level helpers ──────────────────────────────────────────────────────
 
 async def _extract_event(user_text: str) -> dict:
     today = datetime.now(ZoneInfo(TIMEZONE)).strftime("%A %d %B %Y")
-    resp = _claude.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=400,
-        system=f"""Today is {today}. Timezone: Europe/London.
+    now   = datetime.now(ZoneInfo(TIMEZONE)).strftime("%H:%M")
+    resp  = _claude.messages.create(
+        model      = "claude-sonnet-4-20250514",
+        max_tokens = 400,
+        system     = f"""Today is {today}. Current time: {now}. Timezone: Europe/London.
 Extract calendar event details. Respond ONLY with JSON, no markdown:
 {{
   "title": string (descriptive, NO emoji — we add that),
@@ -161,7 +400,30 @@ Extract calendar event details. Respond ONLY with JSON, no markdown:
   "description_context": string (raw context for description),
   "claude_note": string (actionable advice for the event)
 }}""",
-        messages=[{"role": "user", "content": user_text}],
+        messages   = [{"role": "user", "content": user_text}],
+    )
+    raw = resp.content[0].text.strip().strip("```json").strip("```").strip()
+    return json.loads(raw)
+
+
+async def _re_extract_event(original_ext: dict, correction: str) -> dict:
+    """Apply a user correction to an existing event extraction."""
+    today = datetime.now(ZoneInfo(TIMEZONE)).strftime("%A %d %B %Y")
+    now   = datetime.now(ZoneInfo(TIMEZONE)).strftime("%H:%M")
+    resp  = _claude.messages.create(
+        model      = "claude-sonnet-4-20250514",
+        max_tokens = 400,
+        system     = f"""Today is {today}. Current time: {now}. Timezone: Europe/London.
+You have an existing calendar event and a correction from the user.
+Apply the correction and return the updated event as JSON (same schema, no markdown):
+{{
+  "title": string, "event_type": string, "date": "YYYY-MM-DD",
+  "start_time": "HH:MM" or null, "duration_minutes": int or null,
+  "all_day": bool, "location": string or null, "attendees": [string],
+  "description_context": string, "claude_note": string
+}}""",
+        messages   = [{"role": "user", "content":
+            f"Original event:\n{json.dumps(original_ext, indent=2)}\n\nUser correction: {correction}"}],
     )
     raw = resp.content[0].text.strip().strip("```json").strip("```").strip()
     return json.loads(raw)
@@ -169,14 +431,13 @@ Extract calendar event details. Respond ONLY with JSON, no markdown:
 
 def _build_preview(ext: dict) -> tuple[str, dict]:
     tz = ZoneInfo(TIMEZONE)
-    etype = ext.get("event_type", "default")
+    etype    = ext.get("event_type", "default")
     defaults = EVENT_TYPES.get(etype, EVENT_TYPES["default"])
 
-    emoji    = defaults["emoji"]
-    duration = ext.get("duration_minutes") or defaults["duration"]
-    reminder_mins: list[int] = defaults["reminders"]
+    emoji          = defaults["emoji"]
+    duration       = ext.get("duration_minutes") or defaults["duration"]
+    reminder_mins  = defaults["reminders"]
 
-    # Resolve date
     date_str = _resolve_date(ext.get("date", ""), tz)
     all_day  = ext.get("all_day", False) or duration == 0
     time_str = ext.get("start_time") or ("" if all_day else "09:00")
@@ -192,18 +453,16 @@ def _build_preview(ext: dict) -> tuple[str, dict]:
 
     title = f"{emoji} {ext['title']}"
 
-    # Reminders human-readable
     def fmt_reminder(m: int) -> str:
-        if m == 0:     return "At time of event"
-        if m < 60:     return f"{m} min before"
-        if m == 60:    return "1 hour before"
-        if m < 1440:   return f"{m//60} hours before"
-        if m == 1440:  return "1 day before"
+        if m == 0:    return "At time of event"
+        if m < 60:    return f"{m} min before"
+        if m == 60:   return "1 hour before"
+        if m < 1440:  return f"{m//60} hours before"
+        if m == 1440: return "1 day before"
         return f"{m//1440} days before"
 
     reminder_str = " + ".join(fmt_reminder(m) for m in reminder_mins)
 
-    # Description
     desc_parts = []
     if ext.get("attendees"):
         desc_parts.append("Attendees: " + ", ".join(ext["attendees"]))
@@ -213,10 +472,9 @@ def _build_preview(ext: dict) -> tuple[str, dict]:
         desc_parts.append(f"\n📝 Note from Claude:\n{ext['claude_note']}")
     description = "\n".join(desc_parts)
 
-    # Preview markdown
     preview_lines = [
         "📋 *Event Preview*\n",
-        f"🎯 *{title}*",
+        f"*{title}*",
         f"- *When:* {when_str}",
     ]
     if ext.get("location"):
@@ -225,43 +483,37 @@ def _build_preview(ext: dict) -> tuple[str, dict]:
     if description:
         preview_lines.append(f"- *Description:*\n  > {description.replace(chr(10), chr(10)+'  > ')}")
     preview_lines.append("\nShall I go ahead and create this?")
-    preview = "\n".join(preview_lines)
 
-    # Google Calendar event body
     if all_day:
         event_body = {
             "summary": title,
-            "start": {"date": date_str},
-            "end":   {"date": date_str},
-            "reminders": {
-                "useDefault": False,
-                "overrides": [{"method": "popup", "minutes": m} for m in reminder_mins],
-            },
+            "start":   {"date": date_str},
+            "end":     {"date": date_str},
+            "reminders": {"useDefault": False,
+                          "overrides": [{"method": "popup", "minutes": m} for m in reminder_mins]},
         }
     else:
         event_body = {
             "summary": title,
-            "start": {"dateTime": start_dt.isoformat(), "timeZone": TIMEZONE},
-            "end":   {"dateTime": end_dt.isoformat(),   "timeZone": TIMEZONE},
-            "reminders": {
-                "useDefault": False,
-                "overrides": [{"method": "popup", "minutes": m} for m in reminder_mins],
-            },
+            "start":   {"dateTime": start_dt.isoformat(), "timeZone": TIMEZONE},
+            "end":     {"dateTime": end_dt.isoformat(),   "timeZone": TIMEZONE},
+            "reminders": {"useDefault": False,
+                          "overrides": [{"method": "popup", "minutes": m} for m in reminder_mins]},
         }
     if description:
         event_body["description"] = description
     if ext.get("location"):
         event_body["location"] = ext["location"]
 
-    return preview, event_body
+    return "\n".join(preview_lines), event_body
 
 
 def _resolve_date(date_str: str, tz) -> str:
     today = datetime.now(tz).date()
     d = (date_str or "").lower().strip()
-    if d in ("today", ""):   return str(today)
-    if d == "tomorrow":      return str(today + timedelta(days=1))
-    if d == "yesterday":     return str(today - timedelta(days=1))
+    if d in ("today", ""):  return str(today)
+    if d == "tomorrow":     return str(today + timedelta(days=1))
+    if d == "yesterday":    return str(today - timedelta(days=1))
     try:
         datetime.fromisoformat(date_str)
         return date_str

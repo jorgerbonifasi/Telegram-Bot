@@ -95,6 +95,23 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     """Route free-text messages via NLU."""
     user_text = update.message.text
 
+    # Conversational state: gcal edit / add flows
+    gcal_state = context.user_data.get("gcal_state")
+    if gcal_state:
+        if user_text.lower().strip() in ("cancel", "nevermind", "never mind", "exit", "stop"):
+            context.user_data.pop("gcal_state")
+            await update.message.reply_text("Cancelled.")
+            return
+        context.user_data.pop("gcal_state")
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+        if isinstance(gcal_state, dict) and gcal_state.get("mode") == "editing":
+            result = await gcal_skill.handle_edit(update, context, user_text, gcal_state["key"])
+        else:
+            result = await gcal_skill.handle(update, context, user_text)
+        if result and result.text:
+            await _send_result(update, result)
+        return
+
     # Conversational state: todo ➕ Add flow
     if context.user_data.get("todo_state") == "awaiting_add":
         context.user_data.pop("todo_state")
