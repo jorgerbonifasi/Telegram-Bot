@@ -46,7 +46,7 @@ Respond ONLY with a JSON object, no markdown, no explanation:
 
     // For "todo":
     //   "action": "add" | "list" | "done" | "delete" | "clear",
-    //   "task": string (the task text, if relevant),
+    //   "task": string — the task text, rewritten as a clean action phrase: capitalize first word, fix typos, expand contractions/abbreviations (e.g. "pickup shoes" → "Pick up shoes", "review prs" → "Review PRs"). Keep it short and natural.
     //   "section": "work" | "personal" | null,
     //   "priority": "high" | "medium" | "low" | null
   }},
