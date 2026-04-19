@@ -26,6 +26,7 @@ SKILL_MODULES = [
     "skills.todo",
     "skills.gcal",
     "skills.docs",
+    "skills.lists",
     # "skills.my_new_skill",   ← add new skills here
 ]
 for mod in SKILL_MODULES:
@@ -36,8 +37,9 @@ from core.nlu import classify
 from core.auth import require_auth
 
 # Skills that expose callback handlers for inline buttons
-from skills.gcal import _skill_instance as gcal_skill
-from skills.todo import _skill_instance as todo_skill
+from skills.gcal  import _skill_instance as gcal_skill
+from skills.todo  import _skill_instance as todo_skill
+from skills.lists import _skill_instance as list_skill
 
 
 # ── Handlers ──────────────────────────────────────────────────────────────────
@@ -113,6 +115,30 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             await _send_result(update, result)
         return
 
+    # Conversational state: lists flows
+    list_state = context.user_data.get("list_state")
+    if list_state:
+        if user_text.lower().strip() in ("cancel", "nevermind", "never mind", "exit", "stop"):
+            context.user_data.pop("list_state")
+            await update.message.reply_text("Cancelled.")
+            return
+        context.user_data.pop("list_state")
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+        mode      = list_state.get("mode")
+        list_name = list_state.get("list", "groceries")
+        uid       = update.effective_user.id
+        if mode == "awaiting_add":
+            result = await list_skill._add_item(uid, list_name, *list_skill._parse_quantity(user_text))
+        elif mode == "awaiting_done":
+            result = await list_skill._remove_item(uid, list_name, user_text)
+        elif mode == "awaiting_new":
+            result = await list_skill._render_list(uid, user_text.strip().lower())
+        else:
+            result = await list_skill.handle(update, context, user_text)
+        if result.text:
+            await _send_result(update, result)
+        return
+
     # Conversational state: todo flows
     todo_state = context.user_data.get("todo_state")
     if todo_state:
@@ -168,6 +194,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if data.startswith("todo:"):
         await todo_skill.handle_callback(update, context)
+        return
+
+    if data.startswith("list:"):
+        await list_skill.handle_callback(update, context)
         return
 
     if data.startswith("skill_menu:"):
