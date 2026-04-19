@@ -336,6 +336,7 @@ class TodoSkill(BaseSkill):
         if "— in progress" in t or "- in progress" in t:           return "status"
         if "— waiting" in t or "- waiting" in t:                   return "status"
         if "— pending" in t or "- pending" in t:                   return "status"
+        if any(t.startswith(w) for w in ["in progress", "waiting", "pending"]):  return "status"
         if any(w in t for w in ["move ", "this is work", "this is personal"]): return "move"
         if any(w in t for w in ["clear", "remove all"]):           return "clear"
         if any(w in t for w in [", p0", ", p1", ", p2", "small", "medium", "hard", "big", "deadline"]): return "update"
@@ -350,9 +351,17 @@ class TodoSkill(BaseSkill):
 
     def _extract_task_name(self, text: str) -> str:
         t = text
+        # Status-first format: "In progress - Task name" or "In progress — Task name"
+        for prefix in ["in progress - ", "in progress — ", "in progress – ",
+                       "waiting - ", "waiting — ", "waiting – ",
+                       "pending - ", "pending — ", "pending – "]:
+            if t.lower().startswith(prefix):
+                return t[len(prefix):].strip()
+        # Action-prefix format: "mark X done"
         for prefix in ["mark ", "complete ", "done ", "finish "]:
             if t.lower().startswith(prefix):
                 t = t[len(prefix):]
+        # Status-suffix format: "Task name — in progress"
         for suffix in [" done", " complete", " finished", " — in progress",
                        " - in progress", " — waiting", " - waiting", " — pending"]:
             if t.lower().endswith(suffix):
