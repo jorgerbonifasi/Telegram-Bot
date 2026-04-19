@@ -82,18 +82,18 @@ class DocsSkill(BaseSkill):
         if not files:
             return SkillResult("No documents found in your Drive folder.", success=False)
 
-        lines = ["📁 *Your documents:*", ""]
+        lines = ["📁 Your documents:", ""]
         current_folder = None
         for f in sorted(files, key=lambda x: (x["folder_path"], x["name"])):
             if f["folder_path"] != current_folder:
                 current_folder = f["folder_path"]
-                lines.append(f"_📂 {current_folder}_")
+                lines.append(f"📂 {current_folder}")
             ext = f["name"].rsplit(".", 1)[-1].upper() if "." in f["name"] else ""
-            tag = f" `{ext}`" if ext else ""
+            tag = f" [{ext}]" if ext else ""
             lines.append(f"  · {f['name']}{tag}")
         lines.append("")
-        lines.append("_Just ask me for any of these by name or type._")
-        return SkillResult("\n".join(lines))
+        lines.append("Just ask me for any of these by name or type.")
+        return SkillResult("\n".join(lines), parse_mode=None)
 
     async def _find_file(self, query: str) -> dict | None:
         files = self._list_all_files()
