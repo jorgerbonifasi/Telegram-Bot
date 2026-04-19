@@ -93,7 +93,12 @@ class DocsSkill(BaseSkill):
             lines.append(f"  · {f['name']}{tag}")
         lines.append("")
         lines.append("Just ask me for any of these by name or type.")
-        return SkillResult("\n".join(lines), parse_mode=None)
+
+        text = "\n".join(lines)
+        if len(text) > 4000:
+            text = text[:4000].rsplit("\n", 1)[0]
+            text += "\n\n...and more. Ask me for a specific document by name."
+        return SkillResult(text, parse_mode=None)
 
     async def _find_file(self, query: str) -> dict | None:
         files = self._list_all_files()
