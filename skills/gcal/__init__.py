@@ -277,23 +277,36 @@ class GCalSkill(BaseSkill):
         preview, event_body = _build_preview(ext)
         key = f"{update.effective_user.id}:{datetime.now().timestamp()}"
 
-        # Search for an existing event to update
-        existing = self._find_event_by_title(ext.get("title", ""), ext.get("date", ""))
-        is_update = existing and any(
-            w in caption.lower() for w in ["update", "edit", "change", "modify", "current"]
-        )
+        # Detect update intent from caption alone (don't require an existing match)
+        update_keywords = ["update", "edit", "change", "modify", "current", "move", "reschedule", "amend"]
+        update_intent = any(w in caption.lower() for w in update_keywords)
 
-        if is_update:
-            _pending[key] = {"body": event_body, "ext": ext, "event_id": existing["id"]}
-            found_title = existing.get("summary", "existing event")
-            header = (
-                f"📋 *Update Preview*\n\n"
-                f"Found: *{found_title}*\n"
-                f"Will be updated to:\n\n"
-            )
+        # Search for an existing calendar event regardless of intent
+        existing = self._find_event_by_title(ext.get("title", ""), ext.get("date", ""))
+
+        if update_intent:
+            event_id    = existing["id"] if existing else None
+            found_title = existing.get("summary") if existing else None
+            _pending[key] = {"body": event_body, "ext": ext, "event_id": event_id}
+
+            if found_title:
+                header = (
+                    f"📋 *Update Preview*\n\n"
+                    f"Found: *{found_title}*\n"
+                    f"Will be updated to:\n\n"
+                )
+            else:
+                header = (
+                    f"📋 *New Event Preview*\n\n"
+                    f"_(Couldn't find an existing match — will create instead)_\n\n"
+                )
+
             keyboard = InlineKeyboardMarkup([[
-                InlineKeyboardButton("✅ Update event", callback_data=f"gcal_update_confirm:{key}"),
-                InlineKeyboardButton("❌ Cancel",        callback_data=f"gcal_cancel:{key}"),
+                InlineKeyboardButton(
+                    "✅ Update event" if found_title else "✅ Create event",
+                    callback_data=f"gcal_update_confirm:{key}",
+                ),
+                InlineKeyboardButton("❌ Cancel", callback_data=f"gcal_cancel:{key}"),
             ]])
             await update.message.reply_text(
                 header + preview, parse_mode="Markdown", reply_markup=keyboard
@@ -514,7 +527,15 @@ async def _extract_event_from_image(photo_bytes: bytes, caption: str = "") -> di
         model      = "claude-sonnet-4-20250514",
         max_tokens = 400,
         system     = f"""Today is {today}. Current time: {now}. Timezone: Europe/London.
-Extract calendar event details from the image. Respond ONLY with JSON, no markdown:
+Extract calendar event details from the image.
+
+CRITICAL DATE RULES:
+- If the image shows a day name (e.g. Saturday, Sunday, Monday), use that day name as the PRIMARY source of truth.
+- Count forward from today ({today}) to find the next occurrence of that weekday.
+- If both a day name AND a numeric date appear, check that they agree. If they conflict, trust the day name.
+- NEVER guess or default to today — only use a date you are confident about from the image.
+
+Respond ONLY with JSON, no markdown:
 {{
   "title": string (descriptive, NO emoji),
   "event_type": one of: tennis|match|dinner|lunch|call|meeting|flight|deadline|reminder|prep|travel|default,
