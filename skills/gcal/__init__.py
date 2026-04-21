@@ -281,8 +281,8 @@ class GCalSkill(BaseSkill):
         update_keywords = ["update", "edit", "change", "modify", "current", "move", "reschedule", "amend"]
         update_intent = any(w in caption.lower() for w in update_keywords)
 
-        # Search for an existing calendar event regardless of intent
-        existing = self._find_event_by_title(ext.get("title", ""), ext.get("date", ""))
+        # Search for an existing calendar event on the same date (title may differ)
+        existing = self._find_event_on_date(ext.get("date", "")) if update_intent else None
 
         if update_intent:
             event_id    = existing["id"] if existing else None
@@ -292,13 +292,13 @@ class GCalSkill(BaseSkill):
             if found_title:
                 header = (
                     f"📋 *Update Preview*\n\n"
-                    f"Found: *{found_title}*\n"
-                    f"Will be updated to:\n\n"
+                    f"Found on that date: *{found_title}*\n"
+                    f"↓ Will be updated to:\n\n"
                 )
             else:
                 header = (
-                    f"📋 *New Event Preview*\n\n"
-                    f"_(Couldn't find an existing match — will create instead)_\n\n"
+                    f"📋 *Event Preview*\n\n"
+                    f"_No existing event found on that date — will create a new one._\n\n"
                 )
 
             keyboard = InlineKeyboardMarkup([[
@@ -346,6 +346,31 @@ class GCalSkill(BaseSkill):
             return events[0] if events else None
         except Exception as e:
             print(f"[gcal] Event search error: {e}")
+            return None
+
+    def _find_event_on_date(self, date_str: str) -> dict | None:
+        """Return the first calendar event on a given date (any title)."""
+        if not date_str or not self._service:
+            return None
+        try:
+            tz        = ZoneInfo(TIMEZONE)
+            date_str  = _resolve_date(date_str, tz)
+            day_start = datetime.fromisoformat(date_str).replace(
+                hour=0, minute=0, second=0, microsecond=0, tzinfo=tz
+            )
+            day_end   = day_start + timedelta(days=1)
+            result    = self._service.events().list(
+                calendarId  = "primary",
+                timeMin     = day_start.isoformat(),
+                timeMax     = day_end.isoformat(),
+                singleEvents= True,
+                orderBy     = "startTime",
+                maxResults  = 5,
+            ).execute()
+            events = result.get("items", [])
+            return events[0] if events else None
+        except Exception as e:
+            print(f"[gcal] Date event search error: {e}")
             return None
 
     # ── View agenda ───────────────────────────────────────────────────────────
