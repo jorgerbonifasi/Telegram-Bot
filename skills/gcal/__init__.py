@@ -555,10 +555,10 @@ async def _extract_event_from_image(photo_bytes: bytes, caption: str = "") -> di
 Extract calendar event details from the image.
 
 CRITICAL DATE RULES:
-- If the image shows a day name (e.g. Saturday, Sunday, Monday), use that day name as the PRIMARY source of truth.
-- Count forward from today ({today}) to find the next occurrence of that weekday.
-- If both a day name AND a numeric date appear, check that they agree. If they conflict, trust the day name.
-- NEVER guess or default to today — only use a date you are confident about from the image.
+- If the image contains an explicit date number (e.g. "25", "April 25", "25 de abril", "sábado 25"), use that exact date directly — do NOT recompute from the day name.
+- Only derive the date from the day name alone (e.g. "next Saturday") when there is NO explicit date number in the image.
+- If both a date number AND a day name appear, use the date number. The day name is just a sanity check.
+- NEVER override an explicit numeric date by counting weekdays from today.
 
 Respond ONLY with JSON, no markdown:
 {{
