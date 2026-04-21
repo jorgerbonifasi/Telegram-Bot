@@ -27,6 +27,7 @@ SKILL_MODULES = [
     "skills.gcal",
     "skills.docs",
     "skills.lists",
+    "skills.briefing",   # must be last — borrows gcal service after it loads
     # "skills.my_new_skill",   ← add new skills here
 ]
 for mod in SKILL_MODULES:
@@ -37,9 +38,19 @@ from core.nlu import classify
 from core.auth import require_auth
 
 # Skills that expose callback handlers for inline buttons
-from skills.gcal  import _skill_instance as gcal_skill
-from skills.todo  import _skill_instance as todo_skill
-from skills.lists import _skill_instance as list_skill
+from skills.gcal     import _skill_instance as gcal_skill
+from skills.todo     import _skill_instance as todo_skill
+from skills.lists    import _skill_instance as list_skill
+from skills.briefing import _skill_instance as briefing_skill
+
+
+# ── Scheduled job callbacks ───────────────────────────────────────────────────
+
+async def _job_morning_briefing(context: ContextTypes.DEFAULT_TYPE) -> None:
+    await briefing_skill.send_morning(context.bot)
+
+async def _job_evening_briefing(context: ContextTypes.DEFAULT_TYPE) -> None:
+    await briefing_skill.send_evening(context.bot)
 
 
 # ── Handlers ──────────────────────────────────────────────────────────────────
@@ -238,7 +249,7 @@ async def _send_result(update: Update, result: SkillResult) -> None:
 # ── Startup ───────────────────────────────────────────────────────────────────
 
 async def post_init(app: Application) -> None:
-    """Set bot commands menu + run skill on_load hooks."""
+    """Set bot commands menu + run skill on_load hooks + schedule daily briefings."""
     await registry.load_all()
 
     commands = [BotCommand("start", "Show all skills"), BotCommand("help", "Help")]
@@ -246,6 +257,13 @@ async def post_init(app: Application) -> None:
         cmd = skill.commands[0].lstrip("/")
         commands.append(BotCommand(cmd, skill.description[:64]))
     await app.bot.set_my_commands(commands)
+
+    # Schedule daily briefings (London time)
+    from datetime import time as dtime
+    from zoneinfo import ZoneInfo
+    london = ZoneInfo("Europe/London")
+    app.job_queue.run_daily(_job_morning_briefing, time=dtime(8,  0, tzinfo=london), name="morning_briefing")
+    app.job_queue.run_daily(_job_evening_briefing, time=dtime(20, 0, tzinfo=london), name="evening_briefing")
     print(f"[bot] Started with skills: {[s.name for s in registry.all()]}")
 
 
