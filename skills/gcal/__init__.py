@@ -225,6 +225,116 @@ class GCalSkill(BaseSkill):
             await query.edit_message_text("Cancelled.")
             return
 
+        # ── Update flow (from photo) ──────────────────────────────────────────
+        if data.startswith("gcal_update_confirm:"):
+            key     = data.split(":", 1)[1]
+            pending = _pending.pop(key, None)
+            if not pending:
+                await query.edit_message_text("⚠️ Event expired. Please try again.")
+                return
+            event_id = pending.get("event_id")
+            try:
+                if event_id:
+                    updated = self._service.events().patch(
+                        calendarId="primary", eventId=event_id, body=pending["body"]
+                    ).execute()
+                    link  = updated.get("htmlLink", "")
+                    title = pending["body"].get("summary", "Event")
+                    await query.edit_message_text(
+                        f"✅ *{title}* updated in your calendar.\n\n[Open in Google Calendar]({link})",
+                        parse_mode="Markdown",
+                    )
+                else:
+                    created = self._service.events().insert(
+                        calendarId="primary", body=pending["body"]
+                    ).execute()
+                    link  = created.get("htmlLink", "")
+                    title = pending["body"].get("summary", "Event")
+                    await query.edit_message_text(
+                        f"✅ *{title}* added to your calendar.\n\n[Open in Google Calendar]({link})",
+                        parse_mode="Markdown",
+                    )
+            except Exception as e:
+                await query.edit_message_text(f"❌ Failed: {e}")
+            return
+
+    # ── Photo handler ─────────────────────────────────────────────────────────
+
+    async def handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE,
+                           photo_bytes: bytes, caption: str = "") -> SkillResult:
+        """Extract event from screenshot, find existing match, show preview."""
+        if not self._service:
+            return SkillResult("⚠️ Google Calendar not connected.", success=False)
+
+        ext = await _extract_event_from_image(photo_bytes, caption)
+
+        if not ext.get("title"):
+            return SkillResult(
+                "I couldn't spot event details in that image. Try describing the event in text.",
+                success=False, reply_markup=self._nav_keyboard(),
+            )
+
+        preview, event_body = _build_preview(ext)
+        key = f"{update.effective_user.id}:{datetime.now().timestamp()}"
+
+        # Search for an existing event to update
+        existing = self._find_event_by_title(ext.get("title", ""), ext.get("date", ""))
+        is_update = existing and any(
+            w in caption.lower() for w in ["update", "edit", "change", "modify", "current"]
+        )
+
+        if is_update:
+            _pending[key] = {"body": event_body, "ext": ext, "event_id": existing["id"]}
+            found_title = existing.get("summary", "existing event")
+            header = (
+                f"📋 *Update Preview*\n\n"
+                f"Found: *{found_title}*\n"
+                f"Will be updated to:\n\n"
+            )
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ Update event", callback_data=f"gcal_update_confirm:{key}"),
+                InlineKeyboardButton("❌ Cancel",        callback_data=f"gcal_cancel:{key}"),
+            ]])
+            await update.message.reply_text(
+                header + preview, parse_mode="Markdown", reply_markup=keyboard
+            )
+        else:
+            _pending[key] = {"body": event_body, "ext": ext}
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ Create event", callback_data=f"gcal_confirm:{key}"),
+                InlineKeyboardButton("✏️ Edit",          callback_data=f"gcal_edit:{key}"),
+                InlineKeyboardButton("❌ Cancel",         callback_data=f"gcal_cancel:{key}"),
+            ]])
+            await update.message.reply_text(
+                preview, parse_mode="Markdown", reply_markup=keyboard
+            )
+
+        return SkillResult("", success=True)
+
+    # ── Event search ──────────────────────────────────────────────────────────
+
+    def _find_event_by_title(self, title: str, date_str: str = "") -> dict | None:
+        """Search upcoming events for a title match."""
+        if not title or not self._service:
+            return None
+        try:
+            tz  = ZoneInfo(TIMEZONE)
+            now = datetime.now(tz)
+            result = self._service.events().list(
+                calendarId  = "primary",
+                timeMin     = now.isoformat(),
+                timeMax     = (now + timedelta(days=90)).isoformat(),
+                singleEvents= True,
+                orderBy     = "startTime",
+                maxResults  = 20,
+                q           = title,
+            ).execute()
+            events = result.get("items", [])
+            return events[0] if events else None
+        except Exception as e:
+            print(f"[gcal] Event search error: {e}")
+            return None
+
     # ── View agenda ───────────────────────────────────────────────────────────
 
     async def _view_agenda(self, period: str = "today") -> SkillResult:
@@ -379,6 +489,49 @@ class GCalSkill(BaseSkill):
 
 
 # ── Module-level helpers ──────────────────────────────────────────────────────
+
+async def _extract_event_from_image(photo_bytes: bytes, caption: str = "") -> dict:
+    """Use Claude vision to extract event details from a screenshot."""
+    import base64
+    today = datetime.now(ZoneInfo(TIMEZONE)).strftime("%A %d %B %Y")
+    now   = datetime.now(ZoneInfo(TIMEZONE)).strftime("%H:%M")
+
+    image_b64 = base64.standard_b64encode(photo_bytes).decode()
+
+    user_content = [
+        {
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/jpeg", "data": image_b64},
+        },
+        {
+            "type": "text",
+            "text": (f"User caption: {caption}\n\n" if caption else "") +
+                    "Extract the calendar event details visible in this image.",
+        },
+    ]
+
+    resp = _claude.messages.create(
+        model      = "claude-sonnet-4-20250514",
+        max_tokens = 400,
+        system     = f"""Today is {today}. Current time: {now}. Timezone: Europe/London.
+Extract calendar event details from the image. Respond ONLY with JSON, no markdown:
+{{
+  "title": string (descriptive, NO emoji),
+  "event_type": one of: tennis|match|dinner|lunch|call|meeting|flight|deadline|reminder|prep|travel|default,
+  "date": "YYYY-MM-DD",
+  "start_time": "HH:MM" or null,
+  "duration_minutes": int or null,
+  "all_day": bool,
+  "location": string or null,
+  "attendees": [string] or [],
+  "description_context": string (key info from the image),
+  "claude_note": string (anything useful to remember about this event)
+}}""",
+        messages = [{"role": "user", "content": user_content}],
+    )
+    raw = resp.content[0].text.strip().strip("```json").strip("```").strip()
+    return json.loads(raw)
+
 
 async def _extract_event(user_text: str) -> dict:
     today = datetime.now(ZoneInfo(TIMEZONE)).strftime("%A %d %B %Y")

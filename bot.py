@@ -194,6 +194,19 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await _send_result(update, result)
 
 
+@require_auth
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Route photo messages to gcal for event extraction via Claude vision."""
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    photo      = update.message.photo[-1]           # highest resolution
+    photo_file = await context.bot.get_file(photo.file_id)
+    photo_bytes = await photo_file.download_as_bytearray()
+    caption    = update.message.caption or ""
+    result     = await gcal_skill.handle_photo(update, context, bytes(photo_bytes), caption)
+    if result and result.text:
+        await _send_result(update, result)
+
+
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Route inline keyboard callbacks."""
     query = update.callback_query
@@ -286,6 +299,9 @@ def main() -> None:
 
     # Route all other /commands to skill dispatcher
     app.add_handler(MessageHandler(filters.COMMAND, handle_command))
+
+    # Photos → gcal skill (event extraction from screenshots)
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
     # Free-text → NLU
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
