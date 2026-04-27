@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo
 
 import anthropic
 from google.auth.transport.requests import Request
+from google.auth.exceptions import RefreshError
 from googleapiclient.discovery import build
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -33,6 +34,10 @@ TIMEZONE   = "Europe/London"
 
 _claude  = anthropic.Anthropic()
 _pending: dict[str, dict] = {}  # {key: {"body": event_body, "ext": ext}}
+_REVOKED_MSG = (
+    "⚠️ Google Calendar token has been revoked or expired.\n"
+    "Re-run `python -m skills.gcal.auth_setup` and update GOOGLE\\_TOKEN\\_B64 in Railway."
+)
 
 # ── Event type defaults ───────────────────────────────────────────────────────
 
@@ -205,6 +210,9 @@ class GCalSkill(BaseSkill):
                     f"✅ *{title}* added to your calendar.\n\n[Open in Google Calendar]({link})",
                     parse_mode="Markdown",
                 )
+            except RefreshError:
+                self._service = None
+                await query.edit_message_text(_REVOKED_MSG, parse_mode="Markdown")
             except Exception as e:
                 await query.edit_message_text(f"❌ Failed to create event: {e}")
             return
@@ -217,6 +225,9 @@ class GCalSkill(BaseSkill):
                     calendarId="primary", eventId=event_id
                 ).execute()
                 await query.edit_message_text("🗑 Event deleted.")
+            except RefreshError:
+                self._service = None
+                await query.edit_message_text(_REVOKED_MSG, parse_mode="Markdown")
             except Exception as e:
                 await query.edit_message_text(f"❌ Failed to delete: {e}")
             return
@@ -254,6 +265,9 @@ class GCalSkill(BaseSkill):
                         f"✅ *{title}* added to your calendar.\n\n[Open in Google Calendar]({link})",
                         parse_mode="Markdown",
                     )
+            except RefreshError:
+                self._service = None
+                await query.edit_message_text(_REVOKED_MSG, parse_mode="Markdown")
             except Exception as e:
                 await query.edit_message_text(f"❌ Failed: {e}")
             return
@@ -344,6 +358,9 @@ class GCalSkill(BaseSkill):
             ).execute()
             events = result.get("items", [])
             return events[0] if events else None
+        except RefreshError:
+            self._service = None
+            return None
         except Exception as e:
             print(f"[gcal] Event search error: {e}")
             return None
@@ -369,6 +386,9 @@ class GCalSkill(BaseSkill):
             ).execute()
             events = result.get("items", [])
             return events[0] if events else None
+        except RefreshError:
+            self._service = None
+            return None
         except Exception as e:
             print(f"[gcal] Date event search error: {e}")
             return None
@@ -392,14 +412,18 @@ class GCalSkill(BaseSkill):
             day_end   = day_start + timedelta(days=1)
             header    = now.strftime("📅 *Today — %A %d %b*")
 
-        events_result = self._service.events().list(
-            calendarId  = "primary",
-            timeMin     = day_start.isoformat(),
-            timeMax     = day_end.isoformat(),
-            singleEvents= True,
-            orderBy     = "startTime",
-            maxResults  = 20,
-        ).execute()
+        try:
+            events_result = self._service.events().list(
+                calendarId  = "primary",
+                timeMin     = day_start.isoformat(),
+                timeMax     = day_end.isoformat(),
+                singleEvents= True,
+                orderBy     = "startTime",
+                maxResults  = 20,
+            ).execute()
+        except RefreshError:
+            self._service = None
+            return SkillResult(_REVOKED_MSG, success=False)
 
         events = events_result.get("items", [])
         lines  = [header, ""]
@@ -447,15 +471,19 @@ class GCalSkill(BaseSkill):
         now = datetime.now(tz)
         q   = self._extract_delete_query(user_text)
 
-        events_result = self._service.events().list(
-            calendarId  = "primary",
-            timeMin     = now.isoformat(),
-            timeMax     = (now + timedelta(days=30)).isoformat(),
-            singleEvents= True,
-            orderBy     = "startTime",
-            maxResults  = 10,
-            q           = q,
-        ).execute()
+        try:
+            events_result = self._service.events().list(
+                calendarId  = "primary",
+                timeMin     = now.isoformat(),
+                timeMax     = (now + timedelta(days=30)).isoformat(),
+                singleEvents= True,
+                orderBy     = "startTime",
+                maxResults  = 10,
+                q           = q,
+            ).execute()
+        except RefreshError:
+            self._service = None
+            return SkillResult(_REVOKED_MSG, success=False)
 
         events = events_result.get("items", [])
 
@@ -731,8 +759,13 @@ def _get_calendar_service():
     if not creds:
         raise RuntimeError("No Google token found — run auth_setup or set GOOGLE_TOKEN_B64")
     if creds.expired and creds.refresh_token:
-        creds.refresh(Request())
-        print("[gcal] Token refreshed — update GOOGLE_TOKEN_B64 in Railway")
+        try:
+            creds.refresh(Request())
+            print("[gcal] Token refreshed — update GOOGLE_TOKEN_B64 in Railway")
+        except RefreshError as e:
+            raise RuntimeError(
+                f"Google token has been revoked or expired — re-run auth_setup ({e})"
+            ) from e
     if not creds.valid:
         raise RuntimeError("Google token invalid — re-run auth_setup")
     return build("calendar", "v3", credentials=creds)
