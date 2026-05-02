@@ -411,6 +411,44 @@ class HabitsSkill(BaseSkill):
 
         return None
 
+    # ── Scheduled reminders ──────────────────────────────────────────────────────
+
+    async def send_reminder(self, bot, label: str) -> None:
+        uid = self._owner_uid()
+        if not uid:
+            return
+        try:
+            entries = await _fetch_entries(_today())
+        except Exception as e:
+            print(f"[habits] Reminder check failed: {e}")
+            return
+
+        if entries:
+            return  # something already logged today — skip
+
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("📊 Log habits", callback_data="habits_view"),
+            InlineKeyboardButton("🌐 Open app", url="https://preview--my-habit-buddy-22.lovable.app/"),
+        ]])
+        await bot.send_message(
+            chat_id=uid,
+            text=(
+                f"⏰ *{label} habit check-in*\n\n"
+                "Looks like nothing's been logged today yet.\n"
+                "Quick — tick off what you've done! 💪"
+            ),
+            parse_mode="Markdown",
+            reply_markup=keyboard,
+        )
+
+    def _owner_uid(self) -> int | None:
+        raw = os.getenv("ALLOWED_USER_IDS", "")
+        try:
+            return int(raw.split(",")[0].strip())
+        except (ValueError, IndexError):
+            print("[habits] Could not parse ALLOWED_USER_IDS")
+            return None
+
 
 _skill_instance = HabitsSkill()
 registry.register(_skill_instance)

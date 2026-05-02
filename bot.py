@@ -53,6 +53,12 @@ async def _job_morning_briefing(context: ContextTypes.DEFAULT_TYPE) -> None:
 async def _job_evening_briefing(context: ContextTypes.DEFAULT_TYPE) -> None:
     await briefing_skill.send_evening(context.bot)
 
+async def _job_habits_lunch_reminder(context: ContextTypes.DEFAULT_TYPE) -> None:
+    await habits_skill.send_reminder(context.bot, "Afternoon")
+
+async def _job_habits_dinner_reminder(context: ContextTypes.DEFAULT_TYPE) -> None:
+    await habits_skill.send_reminder(context.bot, "Evening")
+
 
 # ── Handlers ──────────────────────────────────────────────────────────────────
 
@@ -280,8 +286,10 @@ async def post_init(app: Application) -> None:
     from datetime import time as dtime
     from zoneinfo import ZoneInfo
     london = ZoneInfo("Europe/London")
-    app.job_queue.run_daily(_job_morning_briefing, time=dtime(8,  0, tzinfo=london), name="morning_briefing")
-    app.job_queue.run_daily(_job_evening_briefing, time=dtime(20, 0, tzinfo=london), name="evening_briefing")
+    app.job_queue.run_daily(_job_morning_briefing,      time=dtime( 8,  0, tzinfo=london), name="morning_briefing")
+    app.job_queue.run_daily(_job_evening_briefing,      time=dtime(20,  0, tzinfo=london), name="evening_briefing")
+    app.job_queue.run_daily(_job_habits_lunch_reminder, time=dtime(14,  0, tzinfo=london), name="habits_lunch_reminder")
+    app.job_queue.run_daily(_job_habits_dinner_reminder,time=dtime(20, 30, tzinfo=london), name="habits_dinner_reminder")
     print(f"[bot] Started with skills: {[s.name for s in registry.all()]}")
 
 
