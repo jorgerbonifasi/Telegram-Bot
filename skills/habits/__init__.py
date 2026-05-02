@@ -237,10 +237,10 @@ class HabitsSkill(BaseSkill):
 
     async def on_load(self):
         global _db
-        url = os.getenv("SUPABASE_URL")
-        key = os.getenv("SUPABASE_SERVICE_KEY")
-        if not url or not key:
-            print("[habits] WARNING: SUPABASE_URL or SUPABASE_SERVICE_KEY not set")
+        url = os.getenv("HABITS_SUPABASE_URL", "https://vrtnchnjxevjivgridav.supabase.co")
+        key = os.getenv("HABITS_SUPABASE_KEY")
+        if not key:
+            print("[habits] WARNING: HABITS_SUPABASE_KEY not set")
             return
         _db = create_client(url, key)
         print("[habits] Habit Tracker connected ✓")
