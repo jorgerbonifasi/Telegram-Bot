@@ -1,7 +1,8 @@
 """
 skills/habits/__init__.py  —  Habit Tracker Skill
 
-Connects to Lovable Habit Tracker via Supabase edge function API.
+Connects directly to Supabase (same project as Lovable Habit Tracker)
+using the existing SUPABASE_URL + SUPABASE_SERVICE_KEY env vars.
 
 Habits:
   tooth_brushing  — 3x per day (Morning / Lunch / Night)
@@ -22,19 +23,16 @@ import json
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-import httpx
+from supabase import create_client, Client
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from core.skill_base import BaseSkill, SkillResult, registry
 
 TIMEZONE = "Europe/London"
-_API_URL = os.getenv(
-    "HABITS_API_URL",
-    "https://vrtnchnjxevjivgridav.supabase.co/functions/v1/external-api",
-)
-_API_KEY      = os.getenv("HABITS_API_KEY", "")
-_SUPABASE_ANON = os.getenv("HABITS_SUPABASE_ANON_KEY", "")
+TABLE    = "habit_entries"
+
+_db: Client | None = None
 
 # ── Habit definitions ──────────────────────────────────────────────────────────
 
@@ -73,51 +71,28 @@ HABITS: dict[str, dict] = {
     },
 }
 
-# ── API helpers ────────────────────────────────────────────────────────────────
+# ── DB helpers ─────────────────────────────────────────────────────────────────
 
 def _today(tz=None) -> str:
     return str(datetime.now(tz or ZoneInfo(TIMEZONE)).date())
 
 
-def _headers() -> dict:
-    h = {"x-api-key": _API_KEY, "Content-Type": "application/json"}
-    if _SUPABASE_ANON:
-        h["Authorization"] = f"Bearer {_SUPABASE_ANON}"
-    return h
+def _fetch_entries(date_key: str) -> list[dict]:
+    if not _db:
+        raise RuntimeError("Supabase not connected")
+    res = _db.table(TABLE).select("*").eq("date_key", date_key).execute()
+    return res.data or []
 
 
-async def _fetch_entries(date_key: str) -> list[dict]:
-    async with httpx.AsyncClient() as client:
-        r = await client.get(
-            _API_URL,
-            params={"date_key": date_key, "limit": 50},
-            headers=_headers(),
-            timeout=10,
-        )
-        r.raise_for_status()
-        data = r.json()
-        return data if isinstance(data, list) else data.get("data", [])
-
-
-async def _upsert(habit_id: str, value, date_key: str) -> None:
-    entries  = await _fetch_entries(date_key)
+def _upsert(habit_id: str, value, date_key: str) -> None:
+    if not _db:
+        raise RuntimeError("Supabase not connected")
+    entries  = _fetch_entries(date_key)
     existing = next((e for e in entries if e["habit_id"] == habit_id), None)
-    async with httpx.AsyncClient() as client:
-        if existing:
-            r = await client.patch(
-                f"{_API_URL}/{existing['id']}",
-                json={"value": value},
-                headers=_headers(),
-                timeout=10,
-            )
-        else:
-            r = await client.post(
-                _API_URL,
-                json={"date_key": date_key, "habit_id": habit_id, "value": value},
-                headers=_headers(),
-                timeout=10,
-            )
-        r.raise_for_status()
+    if existing:
+        _db.table(TABLE).update({"value": value}).eq("id", existing["id"]).execute()
+    else:
+        _db.table(TABLE).insert({"date_key": date_key, "habit_id": habit_id, "value": value}).execute()
 
 # ── Value helpers ──────────────────────────────────────────────────────────────
 
@@ -261,10 +236,14 @@ class HabitsSkill(BaseSkill):
     ]
 
     async def on_load(self):
-        if not _API_KEY:
-            print("[habits] WARNING: HABITS_API_KEY not set")
-        else:
-            print("[habits] Habit Tracker connected ✓")
+        global _db
+        url = os.getenv("SUPABASE_URL")
+        key = os.getenv("SUPABASE_SERVICE_KEY")
+        if not url or not key:
+            print("[habits] WARNING: SUPABASE_URL or SUPABASE_SERVICE_KEY not set")
+            return
+        _db = create_client(url, key)
+        print("[habits] Habit Tracker connected ✓")
 
     # ── Main handler ────────────────────────────────────────────────────────────
 
@@ -292,16 +271,16 @@ class HabitsSkill(BaseSkill):
 
             elif data.startswith("habits_toggle:"):
                 _, hid, slot_str = data.split(":", 2)
-                await self._toggle_slot(hid, int(slot_str))
+                self._toggle_slot(hid, int(slot_str))
 
             elif data.startswith("habits_bool:"):
                 hid = data.split(":", 1)[1]
-                await self._toggle_bool(hid)
+                self._toggle_bool(hid)
 
             elif data.startswith("habits_add:"):
                 parts  = data.split(":")
                 hid, amount = parts[1], int(parts[2])
-                await self._add_numeric(hid, amount)
+                self._add_numeric(hid, amount)
 
             result = await self._view()
             await query.edit_message_text(
@@ -317,13 +296,10 @@ class HabitsSkill(BaseSkill):
         today   = _today(tz)
         date_lbl = datetime.now(tz).strftime("%A %d %b")
         try:
-            entries = await _fetch_entries(today)
+            entries = _fetch_entries(today)
         except Exception as e:
             print(f"[habits] fetch error: {e}")
-            return SkillResult(
-                "❌ Could not load habits — check that HABITS\\_API\\_KEY is set in Railway.",
-                success=False,
-            )
+            return SkillResult("❌ Could not load habits — Supabase connection failed.", success=False)
 
         by_id = {e["habit_id"]: e for e in entries}
         score = _daily_score(entries)
@@ -339,28 +315,28 @@ class HabitsSkill(BaseSkill):
 
     # ── Mutations ───────────────────────────────────────────────────────────────
 
-    async def _toggle_slot(self, habit_id: str, slot: int) -> None:
+    def _toggle_slot(self, habit_id: str, slot: int) -> None:
         today   = _today()
-        entries = await _fetch_entries(today)
+        entries = _fetch_entries(today)
         entry   = next((e for e in entries if e["habit_id"] == habit_id), None)
         n       = len(HABITS[habit_id]["slots"])
         vals    = _as_bool_list(_parse_val(entry["value"] if entry else None), n)
         vals[slot] = not vals[slot]
-        await _upsert(habit_id, vals, today)
+        _upsert(habit_id, vals, today)
 
-    async def _toggle_bool(self, habit_id: str) -> None:
+    def _toggle_bool(self, habit_id: str) -> None:
         today   = _today()
-        entries = await _fetch_entries(today)
+        entries = _fetch_entries(today)
         entry   = next((e for e in entries if e["habit_id"] == habit_id), None)
         current = bool(_parse_val(entry["value"] if entry else None))
-        await _upsert(habit_id, not current, today)
+        _upsert(habit_id, not current, today)
 
-    async def _add_numeric(self, habit_id: str, amount: int | float) -> None:
+    def _add_numeric(self, habit_id: str, amount: int | float) -> None:
         today   = _today()
-        entries = await _fetch_entries(today)
+        entries = _fetch_entries(today)
         entry   = next((e for e in entries if e["habit_id"] == habit_id), None)
         current = _as_number(_parse_val(entry["value"] if entry else None))
-        await _upsert(habit_id, current + amount, today)
+        _upsert(habit_id, current + amount, today)
 
     # ── Natural language parsing ─────────────────────────────────────────────────
 
@@ -369,7 +345,7 @@ class HabitsSkill(BaseSkill):
         m = re.search(r'(\d[\d,]*)\s*steps?', t)
         if m:
             n = int(m.group(1).replace(",", ""))
-            await self._add_numeric("steps", n)
+            self._add_numeric("steps", n)
             return f"{n:,} steps"
 
         # Water — e.g. "500ml", "1000 ml", "1l", "1.5l"
@@ -378,7 +354,7 @@ class HabitsSkill(BaseSkill):
             n = float(m.group(1))
             if m.group(2) == "l":
                 n *= 1000
-            await self._add_numeric("water_intake", int(n))
+            self._add_numeric("water_intake", int(n))
             return f"{int(n)} mL water"
 
         # Social media — only if "social", "media", or "phone" in text
@@ -386,7 +362,7 @@ class HabitsSkill(BaseSkill):
             m = re.search(r'(\d+)\s*min', t)
             if m:
                 n = int(m.group(1))
-                await self._add_numeric("social_media", n)
+                self._add_numeric("social_media", n)
                 return f"{n} min social media"
 
         # Tooth brushing slots
@@ -395,7 +371,7 @@ class HabitsSkill(BaseSkill):
         if any(w in t for w in brushing_words):
             for slot_name, idx in slot_map.items():
                 if slot_name in t:
-                    await self._toggle_slot("tooth_brushing", idx)
+                    self._toggle_slot("tooth_brushing", idx)
                     return f"{slot_name.capitalize()} tooth brushing"
 
         # Healthy eating slots
@@ -404,17 +380,17 @@ class HabitsSkill(BaseSkill):
         if any(w in t for w in eating_words):
             for meal, idx in meal_map.items():
                 if meal in t:
-                    await self._toggle_slot("healthy_eating", idx)
+                    self._toggle_slot("healthy_eating", idx)
                     return f"{meal.capitalize()} meal"
 
         # Exercise
         if any(w in t for w in ("exercise", "workout", "gym", "ran", "run", "trained", "training")):
-            await self._toggle_bool("exercise")
+            self._toggle_bool("exercise")
             return "Exercise"
 
         # Mouth guard
         if any(w in t for w in ("mouth guard", "mouthguard", "guard")):
-            await self._toggle_bool("mouth_guard")
+            self._toggle_bool("mouth_guard")
             return "Mouth guard"
 
         return None
@@ -426,7 +402,7 @@ class HabitsSkill(BaseSkill):
         if not uid:
             return
         try:
-            entries = await _fetch_entries(_today())
+            entries = _fetch_entries(_today())
         except Exception as e:
             print(f"[habits] Reminder check failed: {e}")
             return
