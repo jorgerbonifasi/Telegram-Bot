@@ -27,8 +27,8 @@ SKILL_MODULES = [
     "skills.gcal",
     "skills.docs",
     "skills.lists",
+    "skills.habits",
     "skills.briefing",   # must be last — borrows gcal service after it loads
-    # "skills.my_new_skill",   ← add new skills here
 ]
 for mod in SKILL_MODULES:
     importlib.import_module(mod)
@@ -41,6 +41,7 @@ from core.auth import require_auth
 from skills.gcal     import _skill_instance as gcal_skill
 from skills.todo     import _skill_instance as todo_skill
 from skills.lists    import _skill_instance as list_skill
+from skills.habits   import _skill_instance as habits_skill
 from skills.briefing import _skill_instance as briefing_skill
 
 
@@ -222,6 +223,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if data.startswith("list:"):
         await list_skill.handle_callback(update, context)
+        return
+
+    if data.startswith("habits_"):
+        await habits_skill.handle_callback(update, context)
         return
 
     if data.startswith("skill_menu:"):
