@@ -44,6 +44,11 @@ Respond ONLY with a JSON object, no markdown, no explanation:
     //   "description": string (optional),
     //   "location": string (optional)
 
+    // For "habits":
+    //   "action": "view" | "log",
+    //   "habit_id": "tooth_brushing" | "healthy_eating" | "water_intake" | "exercise" | "mouth_guard" | "steps" | "social_media" | null,
+    //   "value": number | string | null   (e.g. 8000 for steps, "morning" for brushing slot)
+
     // For "todo":
     //   "action": "add" | "list" | "done" | "delete" | "clear",
     //   "task": string — rewrite as a clean, natural action phrase. Rules: (1) capitalize only the first word and proper nouns, (2) no colons — fold lists into natural language (e.g. "Clean: floors, trash" → "Clean floors and trash"), (3) fix typos and spacing, (4) expand abbreviations (e.g. "pickup" → "Pick up", "prs" → "PRs"), (5) keep it concise. Examples: "wash dishes" → "Wash dishes", "buy tickets: frankfurt birthday" → "Buy tickets for Frankfurt and birthday".

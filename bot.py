@@ -27,8 +27,8 @@ SKILL_MODULES = [
     "skills.gcal",
     "skills.docs",
     "skills.lists",
+    "skills.habits",
     "skills.briefing",   # must be last — borrows gcal service after it loads
-    # "skills.my_new_skill",   ← add new skills here
 ]
 for mod in SKILL_MODULES:
     importlib.import_module(mod)
@@ -41,6 +41,7 @@ from core.auth import require_auth
 from skills.gcal     import _skill_instance as gcal_skill
 from skills.todo     import _skill_instance as todo_skill
 from skills.lists    import _skill_instance as list_skill
+from skills.habits   import _skill_instance as habits_skill
 from skills.briefing import _skill_instance as briefing_skill
 
 
@@ -51,6 +52,12 @@ async def _job_morning_briefing(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def _job_evening_briefing(context: ContextTypes.DEFAULT_TYPE) -> None:
     await briefing_skill.send_evening(context.bot)
+
+async def _job_habits_lunch_reminder(context: ContextTypes.DEFAULT_TYPE) -> None:
+    await habits_skill.send_reminder(context.bot, "Afternoon")
+
+async def _job_habits_dinner_reminder(context: ContextTypes.DEFAULT_TYPE) -> None:
+    await habits_skill.send_reminder(context.bot, "Evening")
 
 
 # ── Handlers ──────────────────────────────────────────────────────────────────
@@ -224,6 +231,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await list_skill.handle_callback(update, context)
         return
 
+    if data.startswith("habits_"):
+        await habits_skill.handle_callback(update, context)
+        return
+
     if data.startswith("skill_menu:"):
         skill_name = data.split(":", 1)[1]
         skill = registry.by_name(skill_name)
@@ -275,8 +286,10 @@ async def post_init(app: Application) -> None:
     from datetime import time as dtime
     from zoneinfo import ZoneInfo
     london = ZoneInfo("Europe/London")
-    app.job_queue.run_daily(_job_morning_briefing, time=dtime(8,  0, tzinfo=london), name="morning_briefing")
-    app.job_queue.run_daily(_job_evening_briefing, time=dtime(20, 0, tzinfo=london), name="evening_briefing")
+    app.job_queue.run_daily(_job_morning_briefing,      time=dtime( 8,  0, tzinfo=london), name="morning_briefing")
+    app.job_queue.run_daily(_job_evening_briefing,      time=dtime(20,  0, tzinfo=london), name="evening_briefing")
+    app.job_queue.run_daily(_job_habits_lunch_reminder, time=dtime(14,  0, tzinfo=london), name="habits_lunch_reminder")
+    app.job_queue.run_daily(_job_habits_dinner_reminder,time=dtime(20, 30, tzinfo=london), name="habits_dinner_reminder")
     print(f"[bot] Started with skills: {[s.name for s in registry.all()]}")
 
 
