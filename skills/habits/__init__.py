@@ -172,7 +172,7 @@ def _render_habit(habit_id: str, entry: dict | None) -> str:
         return f"{h['emoji']} *{h['label']}*: {'✅' if ok else '⚠️'} {int(cur)}/{target} {unit}"
     filled = min(10, int(cur / target * 10)) if target else 0
     bar    = "▓" * filled + "░" * (10 - filled)
-    return f"{h['emoji']} *{h['label']}*: {int(cur):,}/{target:,} {unit}\n    `{bar}`"
+    return f"{h['emoji']} *{h['label']}*: {int(cur):,}/{target:,} {unit}  {bar}"
 
 
 def _daily_score(entries: list[dict]) -> int:
@@ -315,7 +315,11 @@ class HabitsSkill(BaseSkill):
         try:
             entries = await _fetch_entries(today)
         except Exception as e:
-            return SkillResult(f"❌ Could not load habits: {e}", success=False)
+            print(f"[habits] fetch error: {e}")
+            return SkillResult(
+                "❌ Could not load habits — check that HABITS\\_API\\_KEY is set in Railway.",
+                success=False,
+            )
 
         by_id = {e["habit_id"]: e for e in entries}
         score = _daily_score(entries)
