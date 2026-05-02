@@ -88,6 +88,22 @@ class ListSkill(BaseSkill):
             return await self._render_list(uid, list_name)
 
         if action == "add":
+            # Multi-item add: "separately", newlines, or comma-separated list
+            items, list_name = self._parse_multi_items(user_text, ext)
+            if items:
+                for item_text in items:
+                    item, qty = self._parse_quantity(item_text)
+                    if item:
+                        self._db.table("lists").insert({
+                            "user_id": uid, "list_name": list_name,
+                            "item": item, "quantity": qty,
+                        }).execute()
+                n = len([i for i in items if i])
+                return await self._render_list(
+                    uid, list_name,
+                    prefix=f"✅ Added {n} items to {_emoji(list_name)} {list_name.title()}"
+                )
+
             item, qty, list_name = self._parse_add(user_text, ext)
             if not item:
                 return SkillResult("What would you like to add, and to which list?", success=False)
@@ -343,6 +359,38 @@ class ListSkill(BaseSkill):
                 return name
         words = t.split()
         return words[-1] if words else "groceries"
+
+    def _parse_multi_items(self, text: str, ext: dict) -> tuple[list[str], str]:
+        """Return (items, list_name) when input looks like a multi-item add, else ([], list_name)."""
+        t = text.strip()
+        has_separately = bool(re.search(r'\bseparately\b', t, re.IGNORECASE))
+        has_newlines   = '\n' in t
+
+        if not has_separately and not has_newlines:
+            return [], ext.get("list_name") or self._parse_list_name(t)
+
+        # Strip add verb
+        t = re.sub(r'^(add|buy|get|need|pick up|put)\s+', '', t, flags=re.IGNORECASE).strip()
+        # Strip "(separately):" or "separately:" prefix
+        t = re.sub(r'^\(?separately\)?\s*:?\s*', '', t, flags=re.IGNORECASE).strip()
+
+        # Extract list name from "to <list>" at the end of the first line
+        list_name = ext.get("list_name") or "groceries"
+        first_line = t.split('\n')[0]
+        if " to " in first_line.lower():
+            idx = first_line.lower().rfind(" to ")
+            potential = first_line[idx + 4:].strip().lower()
+            if len(potential.split()) <= 2:
+                list_name = potential
+                t = t[: t.index(first_line[idx:])].strip() if first_line[idx:] in t else t
+
+        # Split items
+        if has_newlines:
+            items = [ln.strip().lstrip('•-–·').strip() for ln in t.split('\n') if ln.strip()]
+        else:
+            items = [i.strip() for i in re.split(r'[,;]+', t) if i.strip()]
+
+        return items, list_name
 
     def _parse_add(self, text: str, ext: dict) -> tuple[str, str, str]:
         """Returns (item, quantity, list_name)."""
