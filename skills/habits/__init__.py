@@ -33,7 +33,8 @@ _API_URL = os.getenv(
     "HABITS_API_URL",
     "https://vrtnchnjxevjivgridav.supabase.co/functions/v1/external-api",
 )
-_API_KEY = os.getenv("HABITS_API_KEY", "")
+_API_KEY      = os.getenv("HABITS_API_KEY", "")
+_SUPABASE_ANON = os.getenv("HABITS_SUPABASE_ANON_KEY", "")
 
 # ── Habit definitions ──────────────────────────────────────────────────────────
 
@@ -79,7 +80,10 @@ def _today(tz=None) -> str:
 
 
 def _headers() -> dict:
-    return {"x-api-key": _API_KEY, "Content-Type": "application/json"}
+    h = {"x-api-key": _API_KEY, "Content-Type": "application/json"}
+    if _SUPABASE_ANON:
+        h["Authorization"] = f"Bearer {_SUPABASE_ANON}"
+    return h
 
 
 async def _fetch_entries(date_key: str) -> list[dict]:
